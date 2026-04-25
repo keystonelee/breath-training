@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>闭气训练 · 呼吸计时器</title>
+    
+    <!-- PWA 自动安装与离线支持 -->
+    <script>
+        function generateIcon(size) {
+            return new Promise(resolve => {
+                const canvas = document.createElement('canvas');
+                canvas.width = size; canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                const grad = ctx.createLinearGradient(0,0,size,size);
+                grad.addColorStop(0,'#1a1a28'); grad.addColorStop(1,'#0d0d14');
+                ctx.fillStyle = grad; ctx.fillRect(0,0,size,size);
+                ctx.fillStyle = '#4ecdc4';
+                ctx.font = `${size*0.55}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif`;
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText('🫁', size/2, size/2);
+                canvas.toBlob(blob => resolve(blob), 'image/png');
+            });
+        }
+        async function setupManifestAndSW() {
+            const [icon192, icon512] = await Promise.all([generateIcon(192), generateIcon(512)]);
+            const manifest = {
+                name: '闭气训练', short_name: '闭气训练',
+                start_url: location.href, display: 'standalone',
+                background_color: '#0d0d14', theme_color: '#0d0d14',
+                icons: [
+                    { src: URL.createObjectURL(icon192), sizes: '192x192', type: 'image/png' },
+                    { src: URL.createObjectURL(icon512), sizes: '512x512', type: 'image/png' }
+                ]
+            };
+            const link = document.createElement('link'); link.rel = 'manifest';
+            link.href = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
+            document.head.appendChild(link);
+
+            if ('serviceWorker' in navigator) {
+                const swCode = `
+                    const CACHE_NAME = 'breath-trainer-v3';
+                    self.addEventListener('install', e => e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll([self.location.href]))));
+                    self.addEventListener('fetch', e => e.respondWith(caches.match(e.request).then(r => r || fetch(e.request))));
+                `;
+                const swURL = URL.createObjectURL(new Blob([swCode], {type:'application/javascript'}));
+                navigator.serviceWorker.register(swURL).catch(()=>{});
+            }
+        }
+        setupManifestAndSW();
+    </script>
+
+    <style>
+        :root {
+            --bg: #0d0d14; --surface: #1a1a28; --surface-light: #222236;
+            --text: #e8e8f0; --text-secondary: #a0a0b8;
+            --breath-hold: #ff5e5b; --breath-hold-glow: rgba(255,94,91,0.35); --breath-hold-dim: rgba(255,94,91,0.18);
+            --breathe: #4ecdc4; --breathe-glow: rgba(78,205,196,0.35); --breathe-dim: rgba(78,205,196,0.18);
+            --accent: #7c8aff; --danger: #ff4757;
+            --radius: 16px; --radius-sm: 10px; --radius-xs: 7px;
+            --font-mono: 'SF Mono','Cascadia Code','Consolas','Monaco',monospace;
+            --font-sans: -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+            --transition: 0.25s cubic-bezier(0.4,0,0.2,1);
+        }
+        * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+        html,body { height:100%; width:100%; overflow:hidden; background:var(--bg); font-family:var(--font-sans); color:var(--text); display:flex; justify-content:center; align-items:center; touch-action:manipulation; }
+        .app-container { width:100%; max-width:430px; height:100vh; height:100dvh; max-height:900px; background:var(--bg); display:flex; flex-direction:column; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:env(safe-area-inset-top,8px) 12px env(safe-area-inset-bottom,12px); }
+        .header { text-align:center; padding:10px 0 4px; flex-shrink:0; }
+        .header .app-title { font-size:1.35rem; font-weight:700; }
+        .header .subtitle { font-size:0.78rem; color:var(--text-secondary); }
+        .timer-ring-section { display:flex; justify-content:center; padding:10px 0 6px; }
+        .ring-container { position:relative; width:150px; height:150px; }
+        .ring-container svg { width:100%; height:100%; transform:rotate(-90deg); }
+        .ring-bg { fill:none; stroke:var(--surface-light); stroke-width:8; }
+        .ring-progress { fill:none; stroke:var(--breathe); stroke-width:8; stroke-linecap:round; transition:stroke-dashoffset 0.45s linear, stroke 0.5s; }
+        .ring-progress.hold-phase { stroke:var(--breath-hold); }
+        .ring-progress.breathe-phase { stroke:var(--breathe); }
+        .timer-display { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; pointer-events:none; }
+        .timer-display .time-number { font-family:var(--font-mono); font-size:2.6rem; font-weight:700; }
+        .time-number.hold-phase { color:var(--breath-hold); } .time-number.breathe-phase { color:var(--breathe); }
+        .phase-label { font-size:0.75rem; font-weight:600; text-transform:uppercase; margin-top:4px; color:var(--text-secondary); }
+        .phase-label.hold-phase { color:var(--breath-hold); } .phase-label.breathe-phase { color:var(--breathe); }
+        .phase-indicator { font-size:0.7rem; color:var(--text-secondary); margin-top:2px; }
+        .progress-dots { display:flex; gap:5px; justify-content:center; margin-top:6px; flex-wrap:wrap; }
+        .progress-dot { width:7px; height:7px; border-radius:50%; background:var(--surface-light); transition:all 0.3s; }
+        .progress-dot.completed { background:var(--breathe); box-shadow:0 0 6px var(--breathe-glow); }
+        .progress-dot.completed.hold-dot { background:var(--breath-hold); box-shadow:0 0 6px var(--breath-hold-glow); }
+        .progress-dot.active { background:#fff; box-shadow:0 0 10px rgba(255,255,255,0.6); transform:scale(1.5); animation:pulse-dot 0.8s infinite; }
+        @keyframes pulse-dot { 0%,100%{ box-shadow:0 0 6px rgba(255,255,255,0.4); } 50%{ box-shadow:0 0 16px rgba(255,255,255,0.9); } }
+        .columns-wrapper { display:flex; gap:8px; padding:6px 0; flex:1; min-height:0; overflow-y:auto; }
+        .column { flex:1; background:var(--surface); border-radius:var(--radius); padding:10px 7px; display:flex; flex-direction:column; gap:4px; border:1.5px solid transparent; }
+        .column.hold-column { border-top:3px solid var(--breath-hold); }
+        .column.breathe-column { border-top:3px solid var(--breathe); }
+        .column.active-column-highlight { border-color:rgba(255,255,255,0.3); box-shadow:0 0 20px rgba(255,255,255,0.06); }
+        .column-header { font-size:0.8rem; font-weight:700; text-align:center; padding:4px 0 8px; text-transform:uppercase; }
+        .hold-column .column-header { color:var(--breath-hold); } .breathe-column .column-header { color:var(--breathe); }
+        .row-item { display:flex; align-items:center; gap:5px; padding:6px 5px; border-radius:var(--radius-xs); background:transparent; }
+        .row-item.highlight-active { animation:row-glow 1.2s infinite; }
+        .row-item.highlight-active.hold-highlight { background:var(--breath-hold-dim); box-shadow:inset 0 0 0 1.5px rgba(255,94,91,0.5); }
+        .row-item.highlight-active.breathe-highlight { background:var(--breathe-dim); box-shadow:inset 0 0 0 1.5px rgba(78,205,196,0.5); }
+        @keyframes row-glow { 0%,100%{ filter:brightness(1); } 50%{ filter:brightness(1.3); } }
+        .row-seq { width:20px; height:20px; border-radius:50%; background:var(--surface-light); display:flex; align-items:center; justify-content:center; font-size:0.65rem; font-weight:700; color:var(--text-secondary); flex-shrink:0; }
+        .highlight-active .row-seq { background:#fff; color:#000; font-weight:800; }
+        .row-time-display { flex:1; text-align:center; font-family:var(--font-mono); font-size:0.9rem; font-weight:600; cursor:pointer; padding:3px 0; border-radius:4px; border:1px solid transparent; }
+        .row-time-display.editing { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.4); outline:none; -webkit-user-select:text; user-select:text; }
+        .btn-adjust { width:30px; height:30px; border-radius:50%; border:1.5px solid rgba(255,255,255,0.25); background:var(--surface-light); color:var(--text); font-size:1rem; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+        .btn-adjust:active { background:rgba(255,255,255,0.2); transform:scale(0.9); }
+        .btn-adjust:disabled { opacity:0.3; pointer-events:none; }
+        .btn-minus { color:#ff8a80; } .btn-plus { color:#80cbc4; }
+        .controls { display:flex; gap:8px; padding:8px 0 4px; flex-shrink:0; justify-content:center; flex-wrap:wrap; }
+        .btn-main { padding:12px 28px; border-radius:50px; font-size:1rem; font-weight:700; border:none; cursor:pointer; font-family:var(--font-sans); }
+        .btn-start { background:var(--accent); color:#fff; box-shadow:0 6px 24px rgba(124,138,255,0.35); font-size:1.1rem; padding:14px 36px; }
+        .btn-start.running { background:#ffa502; box-shadow:0 6px 24px rgba(255,165,2,0.35); }
+        .btn-reset { background:transparent; border:2px solid rgba(255,255,255,0.3); color:var(--text); padding:10px 20px; font-size:0.85rem; border-radius:50px; }
+        .btn-skip, .btn-history { background:transparent; border:1.5px solid rgba(255,255,255,0.2); color:var(--text-secondary); padding:8px 16px; font-size:0.78rem; border-radius:50px; cursor:pointer; }
+        .btn-skip:disabled, .btn-history:disabled { opacity:0.25; pointer-events:none; }
+        .toast-backdrop { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.55); z-index:89; }
+        .toast-backdrop.hidden { opacity:0; pointer-events:none; }
+        .modal { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%) scale(0); background:var(--surface); border-radius:var(--radius); padding:24px 20px; text-align:center; z-index:90; box-shadow:0 20px 60px rgba(0,0,0,0.7); border:1.5px solid rgba(255,255,255,0.2); transition:transform 0.4s cubic-bezier(0.175,0.885,0.32,1.275); max-width:320px; width:90%; max-height:70vh; overflow-y:auto; }
+        .modal.show { transform:translate(-50%,-50%) scale(1); }
+        .modal h2 { font-size:1.3rem; margin:8px 0 12px; color:#fff; }
+        .modal .btn-close { padding:10px 26px; border-radius:50px; background:var(--accent); color:#fff; border:none; font-weight:600; cursor:pointer; margin-top:12px; }
+        .history-list { text-align:left; max-height:280px; overflow-y:auto; margin:12px 0; }
+        .history-item { padding:10px 12px; background:var(--surface-light); border-radius:8px; margin-bottom:8px; font-size:0.85rem; color:var(--text); display:flex; justify-content:space-between; align-items:center; }
+        .history-item .delete-btn { background:none; border:none; color:var(--danger); font-size:1.2rem; cursor:pointer; padding:0 4px; }
+        .no-record { color:var(--text-secondary); font-size:0.9rem; padding:16px; }
+        @media (max-width:360px) { .row-time-display{font-size:0.78rem;} .btn-adjust{width:26px;height:26px;} .ring-container{width:125px;height:125px;} .timer-display .time-number{font-size:2.2rem;} }
+    </style>
+</head>
+<body>
+<div class="app-container">
+    <div class="header">
+        <div class="app-title">🫁 闭气训练</div>
+        <div class="subtitle">交替闭气 · 呼吸恢复</div>
+    </div>
+    <div class="timer-ring-section">
+        <div class="ring-container">
+            <svg viewBox="0 0 160 160">
+                <circle class="ring-bg" cx="80" cy="80" r="72"/>
+                <circle class="ring-progress" id="ringProgress" cx="80" cy="80" r="72" stroke-dasharray="452.389" stroke-dashoffset="0"/>
+            </svg>
+            <div class="timer-display">
+                <div class="time-number hold-phase" id="timeNumber">0:45</div>
+                <div class="phase-label" id="phaseLabel">准备开始</div>
+                <div class="phase-indicator" id="phaseIndicator">阶段 1/15</div>
+            </div>
+        </div>
+    </div>
+    <div class="progress-dots" id="progressDots"></div>
+    <div class="columns-wrapper">
+        <div class="column hold-column" id="holdColumn">
+            <div class="column-header">🔴 闭气时间</div>
+            <div id="holdRows"></div>
+        </div>
+        <div class="column breathe-column" id="breatheColumn">
+            <div class="column-header">🟢 呼吸时间</div>
+            <div id="breatheRows"></div>
+        </div>
+    </div>
+    <div class="controls">
+        <button class="btn-main btn-start" id="btnStart">▶ 开始训练</button>
+        <button class="btn-reset" id="btnReset">↺ 重置</button>
+        <button class="btn-skip" id="btnSkip" disabled>跳过 ⏭</button>
+        <button class="btn-history" id="btnHistory">📋 历史</button>
+    </div>
+</div>
+
+<div class="toast-backdrop hidden" id="toastBackdrop"></div>
+
+<!-- 完成弹窗 -->
+<div class="modal" id="completeModal">
+    <div style="font-size:3rem;">🏆</div>
+    <h2>训练完成！</h2>
+    <p id="completeStats" style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:8px;"></p>
+    <p style="font-size:0.8rem; color:var(--breathe);" id="completeTime"></p>
+    <button class="btn-close" id="btnCloseComplete">好的</button>
+</div>
+
+<!-- 历史记录弹窗 -->
+<div class="modal" id="historyModal">
+    <h2>📋 历史记录</h2>
+    <div class="history-list" id="historyList"></div>
+    <p style="font-size:0.75rem; color:var(--text-secondary); margin-top:4px;">保留最近三年记录</p>
+    <button class="btn-close" id="btnCloseHistory">关闭</button>
+</div>
+
+<script>
+(function() {
+    const TOTAL_HOLD = 8, TOTAL_BREATHE = 7, TOTAL_PHASES = 15;
+    const STEP = 15, MIN = 5, MAX = 600;
+    const CIRCUM = 2 * Math.PI * 72;
+    const HISTORY_KEY = 'breath-trainer-history';
+    const THREE_YEARS_MS = 3 * 365 * 24 * 60 * 60 * 1000; // 三年毫秒
+
+    let holdTimes = [], breatheTimes = [];
+    let isRunning = false, isPaused = false, phaseIndex = -1;
+    let startTimestamp = null, pausedRemaining = null;
+    let animFrame = null, completed = false;
+
+    const $ = id => document.getElementById(id);
+    const $holdRows = $('holdRows'), $breatheRows = $('breatheRows');
+    const $ring = $('ringProgress'), $timeNum = $('timeNumber');
+    const $phaseLab = $('phaseLabel'), $phaseInd = $('phaseIndicator');
+    const $dots = $('progressDots'), $btnStart = $('btnStart'), $btnReset = $('btnReset'), $btnSkip = $('btnSkip');
+    const $backdrop = $('toastBackdrop'), $completeModal = $('completeModal'), $completeStats = $('completeStats'), $completeTime = $('completeTime');
+    const $historyModal = $('historyModal'), $historyList = $('historyList');
+
+    // ---------- 数据加载 ----------
+    function loadTimes() {
+        try {
+            const d = JSON.parse(localStorage.getItem('breath-trainer-data'));
+            if (d && d.holdTimes?.length===TOTAL_HOLD && d.breatheTimes?.length===TOTAL_BREATHE) {
+                holdTimes = d.holdTimes; breatheTimes = d.breatheTimes; return;
+            }
+        } catch(e){}
+        holdTimes = Array(TOTAL_HOLD).fill(45);
+        breatheTimes = Array(TOTAL_BREATHE).fill(120);
+    }
+    function saveTimes() { localStorage.setItem('breath-trainer-data', JSON.stringify({holdTimes,breatheTimes})); }
+
+    function formatTime(s) { const m=Math.floor(s/60), sec=s%60; return m+':'+String(sec).padStart(2,'0'); }
+    function parseTime(raw) {
+        const t=raw.trim();
+        if(/^\d+$/.test(t)) return Math.max(MIN, Math.min(MAX, +t));
+        const m = t.match(/^(\d{1,2}):(\d{1,2})$/);
+        if(m) { const min=+m[1], sec=+m[2]; if(sec>=60) return null; return Math.max(MIN, Math.min(MAX, min*60+sec)); }
+        return null;
+    }
+
+    function getPhase(i) {
+        if(i<0||i>=TOTAL_PHASES) return null;
+        const hold = i%2===0, row = hold ? i/2 : (i-1)/2;
+        return { index:i, hold, row, total: hold?holdTimes[row]:breatheTimes[row], label:(hold?'闭气':'呼吸')+' '+(row+1) };
+    }
+
+    // ---------- 渲染行 ----------
+    function renderRows() {
+        let h='', b='';
+        for(let i=0;i<TOTAL_HOLD;i++) h+=`<div class="row-item" data-col="hold" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(holdTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
+        for(let i=0;i<TOTAL_BREATHE;i++) b+=`<div class="row-item" data-col="breathe" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(breatheTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
+        $holdRows.innerHTML=h; $breatheRows.innerHTML=b;
+        bindRowEvents(); updateHighlight(); updateBtnStates();
+    }
+
+    function bindRowEvents() {
+        document.querySelectorAll('.btn-adjust').forEach(b => {
+            b.addEventListener('click', adjustTime);
+            b.addEventListener('touchend', e => { e.preventDefault(); adjustTime(e); });
+        });
+        document.querySelectorAll('.row-time-display').forEach(d => d.addEventListener('click', editTime));
+    }
+
+    function adjustTime(e) {
+        if(isRunning||completed) return;
+        const btn = e.currentTarget, parent = btn.parentElement;
+        const col = parent.dataset.col, row = +parent.dataset.row, dir = +btn.dataset.dir;
+        if(col==='hold') holdTimes[row] = Math.max(MIN, Math.min(MAX, holdTimes[row]+dir*STEP));
+        else breatheTimes[row] = Math.max(MIN, Math.min(MAX, breatheTimes[row]+dir*STEP));
+        saveTimes(); refreshDisplays(); updatePreview();
+        if(navigator.vibrate) navigator.vibrate(8);
+    }
+
+    function editTime(e) {
+        if(isRunning||completed) return;
+        const disp = e.currentTarget, parent = disp.parentElement;
+        const col = parent.dataset.col, row = +parent.dataset.row;
+        const cur = col==='hold'?holdTimes[row]:breatheTimes[row];
+        disp.contentEditable='true'; disp.classList.add('editing'); disp.textContent=formatTime(cur); disp.focus();
+        const sel=window.getSelection(); sel.removeAllRanges(); const r=document.createRange(); r.selectNodeContents(disp); sel.addRange(r);
+        const save = () => {
+            disp.contentEditable='false'; disp.classList.remove('editing');
+            const p = parseTime(disp.textContent);
+            if(p!==null) { if(col==='hold') holdTimes[row]=p; else breatheTimes[row]=p; saveTimes(); }
+            refreshDisplays(); updatePreview();
+            disp.removeEventListener('blur', onBlur); disp.removeEventListener('keydown', onKey);
+        };
+        const onBlur = () => setTimeout(save, 100);
+        const onKey = ev => { if(ev.key==='Enter'){ ev.preventDefault(); disp.blur(); } if(ev.key==='Escape'){ ev.preventDefault(); disp.textContent=formatTime(cur); disp.blur(); } };
+        disp.addEventListener('blur', onBlur); disp.addEventListener('keydown', onKey);
+    }
+
+    function refreshDisplays() {
+        document.querySelectorAll('.row-time-display').forEach(d => {
+            if(d.classList.contains('editing')) return;
+            const p=d.parentElement, col=p.dataset.col, row=+p.dataset.row;
+            d.textContent = formatTime(col==='hold'?holdTimes[row]:breatheTimes[row]);
+        });
+    }
+    function updateBtnStates() {
+        document.querySelectorAll('.btn-adjust').forEach(b => b.disabled = (isRunning||completed));
+        document.querySelectorAll('.row-time-display').forEach(d => {
+            d.style.pointerEvents = (isRunning||completed) ? 'none' : 'auto';
+            d.style.opacity = (isRunning||completed) ? '0.7' : '1';
+        });
+    }
+
+    // ---------- 高亮跟随当前阶段（修复点） ----------
+    function updateHighlight() {
+        document.querySelectorAll('.row-item').forEach(el => el.classList.remove('highlight-active','hold-highlight','breathe-highlight'));
+        document.querySelectorAll('.column').forEach(c => c.classList.remove('active-column-highlight'));
+        if(phaseIndex>=0 && phaseIndex<TOTAL_PHASES && !completed) {
+            const info = getPhase(phaseIndex);
+            const col = info.hold ? 'hold' : 'breathe';
+            const rowEl = document.querySelector(`.row-item[data-col="${col}"][data-row="${info.row}"]`);
+            if(rowEl) {
+                rowEl.classList.add('highlight-active', info.hold ? 'hold-highlight' : 'breathe-highlight');
+                rowEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+            }
+            const colEl = document.getElementById(info.hold ? 'holdColumn' : 'breatheColumn');
+            if(colEl) colEl.classList.add('active-column-highlight');
+        }
+    }
+
+    function renderDots() {
+        let h='';
+        for(let i=0;i<TOTAL_PHASES;i++) {
+            let cls='progress-dot';
+            if(completed||i<phaseIndex) cls+=' completed'+(getPhase(i).hold?' hold-dot':'');
+            else if(i===phaseIndex&&!completed) cls+=' active';
+            h+=`<span class="${cls}"></span>`;
+        }
+        $dots.innerHTML=h;
+    }
+    function updatePreview() {
+        if(isRunning||completed) return;
+        if(holdTimes.length) {
+            $timeNum.textContent=formatTime(holdTimes[0]); $timeNum.className='time-number hold-phase';
+            $phaseLab.textContent='闭气 1'; $phaseLab.className='phase-label hold-phase';
+            $phaseInd.textContent='阶段 1/'+TOTAL_PHASES; $ring.style.strokeDashoffset='0'; $ring.className='ring-progress hold-phase';
+        }
+    }
+
+    // ---------- 音频 ----------
+    let audioCtx;
+    function beep(f,d,t='sine') {
+        try {
+            if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+            const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+            o.type=t; o.frequency.setValueAtTime(f,audioCtx.currentTime);
+            g.gain.setValueAtTime(0.25,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d/1000);
+            o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+d/1000);
+        } catch(e){}
+    }
+    function phaseEndSound(hold) { if(hold){ beep(660,180); setTimeout(()=>beep(880,120),100); } else beep(440,200,'triangle'); }
+    function completeSound() { beep(523,150); setTimeout(()=>beep(659,150),160); setTimeout(()=>beep(784,280),320); }
+
+    // ---------- 训练控制 ----------
+    function startTraining() {
+        if(isRunning || completed) return;
+        isRunning=true; completed=false; phaseIndex=0; isPaused=false;
+        startTimestamp=performance.now();
+        updateUIForPhase(getPhase(0)); updateHighlight(); renderDots(); updateBtnStates();
+        $btnSkip.disabled=false; $btnStart.textContent='⏸ 暂停'; $btnStart.classList.add('running');
+        startLoop();
+    }
+    function startLoop() {
+        if(animFrame) cancelAnimationFrame(animFrame);
+        function loop(ts) {
+            if(!isRunning||completed) { animFrame=null; return; }
+            if(isPaused) { animFrame=requestAnimationFrame(loop); return; }
+            const info = getPhase(phaseIndex);
+            if(!info) return;
+            const elapsed = ts - startTimestamp, total = info.total*1000, rem = Math.max(0, total-elapsed);
+            updateTimer(info, rem);
+            if(rem <= 0) {
+                phaseEndSound(info.hold);
+                if(navigator.vibrate) navigator.vibrate([40,60,40]);
+                if(phaseIndex >= TOTAL_PHASES-1) { completeTraining(); return; }
+                phaseIndex++; startTimestamp=performance.now();
+                updateUIForPhase(getPhase(phaseIndex)); updateHighlight(); renderDots();
+            }
+            animFrame = requestAnimationFrame(loop);
+        }
+        animFrame = requestAnimationFrame(loop);
+    }
+    function updateTimer(info, remMs) {
+        const sec = Math.ceil(remMs/1000);
+        $timeNum.textContent = formatTime(sec);
+        $timeNum.className = 'time-number '+(info.hold?'hold-phase':'breathe-phase');
+        $phaseLab.textContent = info.label;
+        $phaseLab.className = 'phase-label '+(info.hold?'hold-phase':'breathe-phase');
+        $phaseInd.textContent = '阶段 '+(phaseIndex+1)+'/'+TOTAL_PHASES;
+        $ring.className = 'ring-progress '+(info.hold?'hold-phase':'breathe-phase');
+        $ring.style.strokeDashoffset = CIRCUM * (1 - remMs/(info.total*1000));
+    }
+    function updateUIForPhase(info) {
+        $timeNum.textContent = formatTime(info.total);
+        $timeNum.className = 'time-number '+(info.hold?'hold-phase':'breathe-phase');
+        $phaseLab.textContent = info.label;
+        $phaseLab.className = 'phase-label '+(info.hold?'hold-phase':'breathe-phase');
+        $phaseInd.textContent = '阶段 '+(phaseIndex+1)+'/'+TOTAL_PHASES;
+        $ring.className = 'ring-progress '+(info.hold?'hold-phase':'breathe-phase');
+        $ring.style.strokeDashoffset = '0';
+    }
+
+    function completeTraining() {
+        completed=true; isRunning=false;
+        if(animFrame){ cancelAnimationFrame(animFrame); animFrame=null; }
+        completeSound(); if(navigator.vibrate) navigator.vibrate([60,80,60,80,120]);
+        $timeNum.textContent='0:00'; $timeNum.className='time-number';
+        $phaseLab.textContent='完成！'; $phaseLab.className='phase-label';
+        $phaseInd.textContent='全部阶段完成'; $ring.style.strokeDashoffset=CIRCUM; $ring.className='ring-progress';
+        updateHighlight(); renderDots(); updateBtnStates();
+        $btnStart.textContent='▶ 开始训练'; $btnStart.classList.remove('running'); $btnSkip.disabled=true;
+
+        const totalSec = holdTimes.reduce((a,b)=>a+b,0) + breatheTimes.reduce((a,b)=>a+b,0);
+        $completeStats.textContent = '总时长：'+formatTime(totalSec)+'（15阶段）';
+        const now = new Date();
+        const timeStr = now.getFullYear()+'年'+(now.getMonth()+1)+'月'+now.getDate()+'日 '+
+                       now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
+        $completeTime.textContent = '完成于：'+timeStr;
+        addHistory(timeStr);
+        showModal($completeModal);
+    }
+
+    function pauseTraining() {
+        if(!isRunning||completed) return;
+        isPaused=true;
+        const info=getPhase(phaseIndex);
+        if(info) pausedRemaining = Math.max(0, info.total*1000 - (performance.now()-startTimestamp));
+        if(animFrame){ cancelAnimationFrame(animFrame); animFrame=null; }
+        $btnStart.textContent='▶ 继续'; $btnStart.classList.remove('running');
+    }
+    function resumeTraining() {
+        if(!isRunning||completed||!isPaused) return;
+        isPaused=false;
+        if(pausedRemaining!==null) {
+            const info=getPhase(phaseIndex);
+            startTimestamp = performance.now() - (info.total*1000 - pausedRemaining);
+            pausedRemaining=null;
+        }
+        $btnStart.textContent='⏸ 暂停'; $btnStart.classList.add('running');
+        startLoop();
+    }
+    function resetTraining() {
+        if(animFrame){ cancelAnimationFrame(animFrame); animFrame=null; }
+        isRunning=false; isPaused=false; completed=false; phaseIndex=-1; pausedRemaining=null;
+        $btnStart.textContent='▶ 开始训练'; $btnStart.classList.remove('running'); $btnSkip.disabled=true;
+        updateBtnStates(); updateHighlight(); renderDots(); updatePreview();
+        $ring.style.strokeDashoffset='0'; $ring.className='ring-progress hold-phase';
+        $phaseInd.textContent='准备就绪'; $phaseLab.textContent='准备开始'; $phaseLab.className='phase-label';
+        document.querySelectorAll('.column').forEach(c=>c.classList.remove('active-column-highlight'));
+        hideModals();
+    }
+    function skipPhase() {
+        if(!isRunning||completed||isPaused) return;
+        beep(300,60,'square'); if(navigator.vibrate) navigator.vibrate(15);
+        if(phaseIndex>=TOTAL_PHASES-1) completeTraining();
+        else { phaseIndex++; startTimestamp=performance.now(); updateUIForPhase(getPhase(phaseIndex)); updateHighlight(); renderDots(); }
+    }
+
+    // ---------- 历史记录（含三年清理） ----------
+    function getHistory() {
+        try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch(e) { return []; }
+    }
+    function saveHistory(history) {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    }
+    function cleanHistory() {
+        const now = Date.now();
+        const history = getHistory().filter(item => (now - item.timestamp) < THREE_YEARS_MS);
+        if (history.length !== getHistory().length) saveHistory(history);
+        return history;
+    }
+    function addHistory(timeStr) {
+        const history = cleanHistory(); // 先清理旧记录
+        history.unshift({
+            timestamp: Date.now(),
+            timeStr: timeStr,
+            total: holdTimes.reduce((a,b)=>a+b,0) + breatheTimes.reduce((a,b)=>a+b,0)
+        });
+        saveHistory(history);
+    }
+    function deleteHistoryByIndex(index) {
+        const history = cleanHistory();
+        history.splice(index,1);
+        saveHistory(history);
+        renderHistoryList();
+    }
+    function renderHistoryList() {
+        const history = cleanHistory();
+        if(history.length===0) {
+            $historyList.innerHTML = '<div class="no-record">暂无训练记录</div>';
+        } else {
+            $historyList.innerHTML = history.map((item,i) => `
+                <div class="history-item">
+                    <span>${item.timeStr} · ${formatTime(item.total)}</span>
+                    <button class="delete-btn" data-index="${i}" title="删除">×</button>
+                </div>
+            `).join('');
+            document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', e => {
+                deleteHistoryByIndex(+e.currentTarget.dataset.index);
+            }));
+        }
+    }
+
+    function showModal(modal) {
+        $backdrop.classList.remove('hidden');
+        modal.classList.add('show');
+    }
+    function hideModals() {
+        $backdrop.classList.add('hidden');
+        $completeModal.classList.remove('show');
+        $historyModal.classList.remove('show');
+    }
+
+    // ---------- 事件绑定 ----------
+    $btnStart.addEventListener('click', () => {
+        if(completed) { resetTraining(); return; }
+        if(!isRunning) startTraining();
+        else if(isPaused) resumeTraining();
+        else pauseTraining();
+    });
+    $btnReset.addEventListener('click', resetTraining);
+    $btnSkip.addEventListener('click', skipPhase);
+    $('btnCloseComplete').addEventListener('click', () => { hideModals(); resetTraining(); });
+    $('btnCloseHistory').addEventListener('click', hideModals);
+    $backdrop.addEventListener('click', hideModals);
+    $('btnHistory').addEventListener('click', () => { renderHistoryList(); showModal($historyModal); });
+
+    document.addEventListener('keydown', e => {
+        if(e.target.contentEditable==='true') return;
+        if(e.key===' ') { e.preventDefault(); $btnStart.click(); }
+        if(e.key==='s'||e.key==='S') { e.preventDefault(); skipPhase(); }
+        if(e.key==='r'||e.key==='R') { e.preventDefault(); resetTraining(); }
+        if(e.key==='h'||e.key==='H') { e.preventDefault(); $('btnHistory').click(); }
+    });
+
+    // 页面恢复时校准计时器
+    document.addEventListener('visibilitychange', () => {
+        if(document.hidden && isRunning && !isPaused && !completed) {
+            const info = getPhase(phaseIndex);
+            if(info) pausedRemaining = Math.max(0, info.total*1000 - (performance.now()-startTimestamp));
+        }
+        if(!document.hidden && isRunning && !isPaused && !completed && pausedRemaining !== null) {
+            const info = getPhase(phaseIndex);
+            if(info) {
+                startTimestamp = performance.now() - (info.total*1000 - pausedRemaining);
+                pausedRemaining = null;
+            }
+        }
+    });
+
+    // ---------- 初始化 ----------
+    loadTimes(); renderRows(); renderDots(); updatePreview();
+    $ring.style.strokeDasharray = CIRCUM; $ring.style.strokeDashoffset = '0';
+})();
+</script>
+</body>
+</html>
