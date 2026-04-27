@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>闭气训练 · 呼吸计时器</title>
     
-    <!-- PWA 自动安装与离线支持 -->
+    <!-- PWA 自动安装支持（打包 APK 必须） -->
     <script>
         function generateIcon(size) {
             return new Promise(resolve => {
@@ -41,7 +41,7 @@
 
             if ('serviceWorker' in navigator) {
                 const swCode = `
-                    const CACHE_NAME = 'breath-trainer-v3';
+                    const CACHE_NAME = 'breath-trainer-v4';
                     self.addEventListener('install', e => e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll([self.location.href]))));
                     self.addEventListener('fetch', e => e.respondWith(caches.match(e.request).then(r => r || fetch(e.request))));
                 `;
@@ -168,8 +168,6 @@
 </div>
 
 <div class="toast-backdrop hidden" id="toastBackdrop"></div>
-
-<!-- 完成弹窗 -->
 <div class="modal" id="completeModal">
     <div style="font-size:3rem;">🏆</div>
     <h2>训练完成！</h2>
@@ -177,8 +175,6 @@
     <p style="font-size:0.8rem; color:var(--breathe);" id="completeTime"></p>
     <button class="btn-close" id="btnCloseComplete">好的</button>
 </div>
-
-<!-- 历史记录弹窗 -->
 <div class="modal" id="historyModal">
     <h2>📋 历史记录</h2>
     <div class="history-list" id="historyList"></div>
@@ -192,7 +188,7 @@
     const STEP = 15, MIN = 5, MAX = 600;
     const CIRCUM = 2 * Math.PI * 72;
     const HISTORY_KEY = 'breath-trainer-history';
-    const THREE_YEARS_MS = 3 * 365 * 24 * 60 * 60 * 1000; // 三年毫秒
+    const THREE_YEARS_MS = 3 * 365 * 24 * 60 * 60 * 1000;
 
     let holdTimes = [], breatheTimes = [];
     let isRunning = false, isPaused = false, phaseIndex = -1;
@@ -207,7 +203,6 @@
     const $backdrop = $('toastBackdrop'), $completeModal = $('completeModal'), $completeStats = $('completeStats'), $completeTime = $('completeTime');
     const $historyModal = $('historyModal'), $historyList = $('historyList');
 
-    // ---------- 数据加载 ----------
     function loadTimes() {
         try {
             const d = JSON.parse(localStorage.getItem('breath-trainer-data'));
@@ -235,7 +230,6 @@
         return { index:i, hold, row, total: hold?holdTimes[row]:breatheTimes[row], label:(hold?'闭气':'呼吸')+' '+(row+1) };
     }
 
-    // ---------- 渲染行 ----------
     function renderRows() {
         let h='', b='';
         for(let i=0;i<TOTAL_HOLD;i++) h+=`<div class="row-item" data-col="hold" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(holdTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
@@ -296,14 +290,12 @@
         });
     }
 
-    // ---------- 高亮跟随当前阶段（修复点） ----------
     function updateHighlight() {
         document.querySelectorAll('.row-item').forEach(el => el.classList.remove('highlight-active','hold-highlight','breathe-highlight'));
         document.querySelectorAll('.column').forEach(c => c.classList.remove('active-column-highlight'));
         if(phaseIndex>=0 && phaseIndex<TOTAL_PHASES && !completed) {
             const info = getPhase(phaseIndex);
-            const col = info.hold ? 'hold' : 'breathe';
-            const rowEl = document.querySelector(`.row-item[data-col="${col}"][data-row="${info.row}"]`);
+            const rowEl = document.querySelector(`.row-item[data-col="${info.hold?'hold':'breathe'}"][data-row="${info.row}"]`);
             if(rowEl) {
                 rowEl.classList.add('highlight-active', info.hold ? 'hold-highlight' : 'breathe-highlight');
                 rowEl.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -332,21 +324,34 @@
         }
     }
 
-    // ---------- 音频 ----------
     let audioCtx;
+    // 增强音效：提高增益至 0.6，并延长尾音时间
     function beep(f,d,t='sine') {
         try {
             if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
             const o=audioCtx.createOscillator(), g=audioCtx.createGain();
             o.type=t; o.frequency.setValueAtTime(f,audioCtx.currentTime);
-            g.gain.setValueAtTime(0.25,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d/1000);
+            g.gain.setValueAtTime(0.6,audioCtx.currentTime); // 音量提升至 0.6
+            g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d/1000);
             o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+d/1000);
         } catch(e){}
     }
-    function phaseEndSound(hold) { if(hold){ beep(660,180); setTimeout(()=>beep(880,120),100); } else beep(440,200,'triangle'); }
-    function completeSound() { beep(523,150); setTimeout(()=>beep(659,150),160); setTimeout(()=>beep(784,280),320); }
+    function phaseEndSound(hold) {
+        if(hold){
+            // 闭气结束：响亮的高音，提示可以呼吸
+            beep(880, 200, 'sine');
+            setTimeout(()=>beep(1100, 150, 'sine'), 100);
+        } else {
+            // 呼吸结束：较低但有力的声音，准备闭气
+            beep(520, 250, 'triangle');
+        }
+    }
+    function completeSound() {
+        beep(660, 180, 'sine');
+        setTimeout(()=>beep(880, 200, 'sine'), 160);
+        setTimeout(()=>beep(1047, 300, 'sine'), 340);
+    }
 
-    // ---------- 训练控制 ----------
     function startTraining() {
         if(isRunning || completed) return;
         isRunning=true; completed=false; phaseIndex=0; isPaused=false;
@@ -445,108 +450,4 @@
         hideModals();
     }
     function skipPhase() {
-        if(!isRunning||completed||isPaused) return;
-        beep(300,60,'square'); if(navigator.vibrate) navigator.vibrate(15);
-        if(phaseIndex>=TOTAL_PHASES-1) completeTraining();
-        else { phaseIndex++; startTimestamp=performance.now(); updateUIForPhase(getPhase(phaseIndex)); updateHighlight(); renderDots(); }
-    }
-
-    // ---------- 历史记录（含三年清理） ----------
-    function getHistory() {
-        try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch(e) { return []; }
-    }
-    function saveHistory(history) {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    }
-    function cleanHistory() {
-        const now = Date.now();
-        const history = getHistory().filter(item => (now - item.timestamp) < THREE_YEARS_MS);
-        if (history.length !== getHistory().length) saveHistory(history);
-        return history;
-    }
-    function addHistory(timeStr) {
-        const history = cleanHistory(); // 先清理旧记录
-        history.unshift({
-            timestamp: Date.now(),
-            timeStr: timeStr,
-            total: holdTimes.reduce((a,b)=>a+b,0) + breatheTimes.reduce((a,b)=>a+b,0)
-        });
-        saveHistory(history);
-    }
-    function deleteHistoryByIndex(index) {
-        const history = cleanHistory();
-        history.splice(index,1);
-        saveHistory(history);
-        renderHistoryList();
-    }
-    function renderHistoryList() {
-        const history = cleanHistory();
-        if(history.length===0) {
-            $historyList.innerHTML = '<div class="no-record">暂无训练记录</div>';
-        } else {
-            $historyList.innerHTML = history.map((item,i) => `
-                <div class="history-item">
-                    <span>${item.timeStr} · ${formatTime(item.total)}</span>
-                    <button class="delete-btn" data-index="${i}" title="删除">×</button>
-                </div>
-            `).join('');
-            document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', e => {
-                deleteHistoryByIndex(+e.currentTarget.dataset.index);
-            }));
-        }
-    }
-
-    function showModal(modal) {
-        $backdrop.classList.remove('hidden');
-        modal.classList.add('show');
-    }
-    function hideModals() {
-        $backdrop.classList.add('hidden');
-        $completeModal.classList.remove('show');
-        $historyModal.classList.remove('show');
-    }
-
-    // ---------- 事件绑定 ----------
-    $btnStart.addEventListener('click', () => {
-        if(completed) { resetTraining(); return; }
-        if(!isRunning) startTraining();
-        else if(isPaused) resumeTraining();
-        else pauseTraining();
-    });
-    $btnReset.addEventListener('click', resetTraining);
-    $btnSkip.addEventListener('click', skipPhase);
-    $('btnCloseComplete').addEventListener('click', () => { hideModals(); resetTraining(); });
-    $('btnCloseHistory').addEventListener('click', hideModals);
-    $backdrop.addEventListener('click', hideModals);
-    $('btnHistory').addEventListener('click', () => { renderHistoryList(); showModal($historyModal); });
-
-    document.addEventListener('keydown', e => {
-        if(e.target.contentEditable==='true') return;
-        if(e.key===' ') { e.preventDefault(); $btnStart.click(); }
-        if(e.key==='s'||e.key==='S') { e.preventDefault(); skipPhase(); }
-        if(e.key==='r'||e.key==='R') { e.preventDefault(); resetTraining(); }
-        if(e.key==='h'||e.key==='H') { e.preventDefault(); $('btnHistory').click(); }
-    });
-
-    // 页面恢复时校准计时器
-    document.addEventListener('visibilitychange', () => {
-        if(document.hidden && isRunning && !isPaused && !completed) {
-            const info = getPhase(phaseIndex);
-            if(info) pausedRemaining = Math.max(0, info.total*1000 - (performance.now()-startTimestamp));
-        }
-        if(!document.hidden && isRunning && !isPaused && !completed && pausedRemaining !== null) {
-            const info = getPhase(phaseIndex);
-            if(info) {
-                startTimestamp = performance.now() - (info.total*1000 - pausedRemaining);
-                pausedRemaining = null;
-            }
-        }
-    });
-
-    // ---------- 初始化 ----------
-    loadTimes(); renderRows(); renderDots(); updatePreview();
-    $ring.style.strokeDasharray = CIRCUM; $ring.style.strokeDashoffset = '0';
-})();
-</script>
-</body>
-</html>
+        if(!isRunning||
