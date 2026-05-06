@@ -40,7 +40,7 @@
 
             if ('serviceWorker' in navigator) {
                 const swCode = `
-                    const CACHE_NAME = 'breath-trainer-v5';
+                    const CACHE_NAME = 'breath-trainer-v6';
                     self.addEventListener('install', e => e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll([self.location.href]))));
                     self.addEventListener('fetch', e => e.respondWith(caches.match(e.request).then(r => r || fetch(e.request))));
                 `;
@@ -90,15 +90,16 @@
         @keyframes pulse-dot { 0%,100%{ box-shadow:0 0 6px rgba(255,255,255,0.4); } 50%{ box-shadow:0 0 16px rgba(255,255,255,0.9); } }
         .columns-wrapper { display:flex; gap:8px; padding:6px 0; flex:1; min-height:0; overflow-y:auto; }
         .column { flex:1; background:var(--surface); border-radius:var(--radius); padding:10px 7px; display:flex; flex-direction:column; gap:4px; border:1.5px solid transparent; }
-        .column.hold-column { border-top:3px solid var(--breath-hold); }
         .column.breathe-column { border-top:3px solid var(--breathe); }
+        .column.hold-column { border-top:3px solid var(--breath-hold); }
         .column.active-column-highlight { border-color:rgba(255,255,255,0.3); box-shadow:0 0 20px rgba(255,255,255,0.06); }
         .column-header { font-size:0.8rem; font-weight:700; text-align:center; padding:4px 0 8px; text-transform:uppercase; }
-        .hold-column .column-header { color:var(--breath-hold); } .breathe-column .column-header { color:var(--breathe); }
+        .breathe-column .column-header { color:var(--breathe); }
+        .hold-column .column-header { color:var(--breath-hold); }
         .row-item { display:flex; align-items:center; gap:5px; padding:6px 5px; border-radius:var(--radius-xs); background:transparent; }
         .row-item.highlight-active { animation:row-glow 1.2s infinite; }
-        .row-item.highlight-active.hold-highlight { background:var(--breath-hold-dim); box-shadow:inset 0 0 0 1.5px rgba(255,94,91,0.5); }
         .row-item.highlight-active.breathe-highlight { background:var(--breathe-dim); box-shadow:inset 0 0 0 1.5px rgba(78,205,196,0.5); }
+        .row-item.highlight-active.hold-highlight { background:var(--breath-hold-dim); box-shadow:inset 0 0 0 1.5px rgba(255,94,91,0.5); }
         @keyframes row-glow { 0%,100%{ filter:brightness(1); } 50%{ filter:brightness(1.3); } }
         .row-seq { width:20px; height:20px; border-radius:50%; background:var(--surface-light); display:flex; align-items:center; justify-content:center; font-size:0.65rem; font-weight:700; color:var(--text-secondary); flex-shrink:0; }
         .highlight-active .row-seq { background:#fff; color:#000; font-weight:800; }
@@ -132,7 +133,7 @@
 <div class="app-container">
     <div class="header">
         <div class="app-title">🫁 闭气训练</div>
-        <div class="subtitle">交替闭气 · 呼吸恢复</div>
+        <div class="subtitle">呼吸调整 · 交替闭气</div>
     </div>
     <div class="timer-ring-section">
         <div class="ring-container">
@@ -141,21 +142,23 @@
                 <circle class="ring-progress" id="ringProgress" cx="80" cy="80" r="72" stroke-dasharray="452.389" stroke-dashoffset="0"/>
             </svg>
             <div class="timer-display">
-                <div class="time-number hold-phase" id="timeNumber">0:45</div>
+                <div class="time-number breathe-phase" id="timeNumber">2:00</div>
                 <div class="phase-label" id="phaseLabel">准备开始</div>
-                <div class="phase-indicator" id="phaseIndicator">阶段 1/15</div>
+                <div class="phase-indicator" id="phaseIndicator">阶段 1/16</div>
             </div>
         </div>
     </div>
     <div class="progress-dots" id="progressDots"></div>
     <div class="columns-wrapper">
-        <div class="column hold-column" id="holdColumn">
-            <div class="column-header">🔴 闭气时间</div>
-            <div id="holdRows"></div>
-        </div>
+        <!-- 左边：呼吸时间 -->
         <div class="column breathe-column" id="breatheColumn">
             <div class="column-header">🟢 呼吸时间</div>
             <div id="breatheRows"></div>
+        </div>
+        <!-- 右边：闭气时间 -->
+        <div class="column hold-column" id="holdColumn">
+            <div class="column-header">🔴 闭气时间</div>
+            <div id="holdRows"></div>
         </div>
     </div>
     <div class="controls">
@@ -183,7 +186,7 @@
 
 <script>
 (function() {
-    const TOTAL_HOLD = 8, TOTAL_BREATHE = 7, TOTAL_PHASES = 15;
+    const TOTAL_HOLD = 8, TOTAL_BREATHE = 8, TOTAL_PHASES = 16;
     const STEP = 15, MIN = 5, MAX = 600;
     const CIRCUM = 2 * Math.PI * 72;
     const HISTORY_KEY = 'breath-trainer-history';
@@ -195,7 +198,7 @@
     let animFrame = null, completed = false;
 
     const $ = id => document.getElementById(id);
-    const $holdRows = $('holdRows'), $breatheRows = $('breatheRows');
+    const $breatheRows = $('breatheRows'), $holdRows = $('holdRows');
     const $ring = $('ringProgress'), $timeNum = $('timeNumber');
     const $phaseLab = $('phaseLabel'), $phaseInd = $('phaseIndicator');
     const $dots = $('progressDots'), $btnStart = $('btnStart'), $btnReset = $('btnReset'), $btnSkip = $('btnSkip');
@@ -223,17 +226,26 @@
         return null;
     }
 
+    // 阶段索引：0=呼吸1, 1=闭气1, 2=呼吸2, 3=闭气2, ... 14=呼吸8, 15=闭气8
     function getPhase(i) {
         if(i<0||i>=TOTAL_PHASES) return null;
-        const hold = i%2===0, row = hold ? i/2 : (i-1)/2;
-        return { index:i, hold, row, total: hold?holdTimes[row]:breatheTimes[row], label:(hold?'闭气':'呼吸')+' '+(row+1) };
+        const isHold = i % 2 === 1;  // 奇数=闭气
+        const row = isHold ? (i-1)/2 : i/2;
+        return {
+            index: i,
+            hold: isHold,
+            row,
+            total: isHold ? holdTimes[row] : breatheTimes[row],
+            label: (isHold ? '闭气' : '呼吸') + ' ' + (row+1),
+            colType: isHold ? 'hold' : 'breathe'
+        };
     }
 
     function renderRows() {
-        let h='', b='';
-        for(let i=0;i<TOTAL_HOLD;i++) h+=`<div class="row-item" data-col="hold" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(holdTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
-        for(let i=0;i<TOTAL_BREATHE;i++) b+=`<div class="row-item" data-col="breathe" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(breatheTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
-        $holdRows.innerHTML=h; $breatheRows.innerHTML=b;
+        let breatheHTML='', holdHTML='';
+        for(let i=0;i<TOTAL_BREATHE;i++) breatheHTML+=`<div class="row-item" data-col="breathe" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(breatheTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
+        for(let i=0;i<TOTAL_HOLD;i++) holdHTML+=`<div class="row-item" data-col="hold" data-row="${i}"><span class="row-seq">${i+1}</span><span class="row-time-display">${formatTime(holdTimes[i])}</span><button class="btn-adjust btn-minus" data-dir="-1">−</button><button class="btn-adjust btn-plus" data-dir="1">+</button></div>`;
+        $breatheRows.innerHTML=breatheHTML; $holdRows.innerHTML=holdHTML;
         bindRowEvents(); updateHighlight(); updateBtnStates();
     }
 
@@ -294,7 +306,7 @@
         document.querySelectorAll('.column').forEach(c => c.classList.remove('active-column-highlight'));
         if(phaseIndex>=0 && phaseIndex<TOTAL_PHASES && !completed) {
             const info = getPhase(phaseIndex);
-            const rowEl = document.querySelector(`.row-item[data-col="${info.hold?'hold':'breathe'}"][data-row="${info.row}"]`);
+            const rowEl = document.querySelector(`.row-item[data-col="${info.colType}"][data-row="${info.row}"]`);
             if(rowEl) {
                 rowEl.classList.add('highlight-active', info.hold ? 'hold-highlight' : 'breathe-highlight');
                 rowEl.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -308,18 +320,20 @@
         let h='';
         for(let i=0;i<TOTAL_PHASES;i++) {
             let cls='progress-dot';
-            if(completed||i<phaseIndex) cls+=' completed'+(getPhase(i).hold?' hold-dot':'');
+            const info = getPhase(i);
+            if(completed||i<phaseIndex) cls+=' completed'+(info.hold?' hold-dot':'');
             else if(i===phaseIndex&&!completed) cls+=' active';
             h+=`<span class="${cls}"></span>`;
         }
         $dots.innerHTML=h;
     }
+
     function updatePreview() {
         if(isRunning||completed) return;
-        if(holdTimes.length) {
-            $timeNum.textContent=formatTime(holdTimes[0]); $timeNum.className='time-number hold-phase';
-            $phaseLab.textContent='闭气 1'; $phaseLab.className='phase-label hold-phase';
-            $phaseInd.textContent='阶段 1/'+TOTAL_PHASES; $ring.style.strokeDashoffset='0'; $ring.className='ring-progress hold-phase';
+        if(breatheTimes.length) {
+            $timeNum.textContent=formatTime(breatheTimes[0]); $timeNum.className='time-number breathe-phase';
+            $phaseLab.textContent='呼吸 1'; $phaseLab.className='phase-label breathe-phase';
+            $phaseInd.textContent='阶段 1/'+TOTAL_PHASES; $ring.style.strokeDashoffset='0'; $ring.className='ring-progress breathe-phase';
         }
     }
 
@@ -329,7 +343,7 @@
             if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)();
             const o=audioCtx.createOscillator(), g=audioCtx.createGain();
             o.type=t; o.frequency.setValueAtTime(f,audioCtx.currentTime);
-            g.gain.setValueAtTime(0.9,audioCtx.currentTime);
+            g.gain.setValueAtTime(0.6,audioCtx.currentTime);
             g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+d/1000);
             o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+d/1000);
         } catch(e){}
@@ -407,7 +421,7 @@
         $btnStart.textContent='▶ 开始训练'; $btnStart.classList.remove('running'); $btnSkip.disabled=true;
 
         const totalSec = holdTimes.reduce((a,b)=>a+b,0) + breatheTimes.reduce((a,b)=>a+b,0);
-        $completeStats.textContent = '总时长：'+formatTime(totalSec)+'（15阶段）';
+        $completeStats.textContent = '总时长：'+formatTime(totalSec)+'（16阶段）';
         const now = new Date();
         const timeStr = now.getFullYear()+'年'+(now.getMonth()+1)+'月'+now.getDate()+'日 '+
                        now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
@@ -440,7 +454,7 @@
         isRunning=false; isPaused=false; completed=false; phaseIndex=-1; pausedRemaining=null;
         $btnStart.textContent='▶ 开始训练'; $btnStart.classList.remove('running'); $btnSkip.disabled=true;
         updateBtnStates(); updateHighlight(); renderDots(); updatePreview();
-        $ring.style.strokeDashoffset='0'; $ring.className='ring-progress hold-phase';
+        $ring.style.strokeDashoffset='0'; $ring.className='ring-progress breathe-phase';
         $phaseInd.textContent='准备就绪'; $phaseLab.textContent='准备开始'; $phaseLab.className='phase-label';
         document.querySelectorAll('.column').forEach(c=>c.classList.remove('active-column-highlight'));
         hideModals();
